@@ -1,23 +1,31 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Query
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Path, Request
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
 from datetime import datetime
 from typing import List
 
-from database import engine, get_db, Base
+from database import get_db
 from models import User, DoctorAvailability, Appointment
 from schemas import (
-    UserCreate, UserLogin, Token, UserOut,
+    UserCreate, UserLogin, Token, UserOut, MessageOut,
     AvailabilityCreate, AvailabilityUpdate, AvailabilityOut,
-    AppointmentCreate, AppointmentUpdate, AppointmentOut
+    AppointmentCreate, AppointmentUpdate, AppointmentOut,
+    DoctorPublicOut
 )
 from auth import (
-    hash_password, verify_password, create_access_token,
-    get_current_user, require_role
+    hash_password, authenticate_user, create_access_token, decode_token_claims,
+    get_current_user, require_role, require_verified, oauth2_scheme,
+    check_register_rate_limit, revoke_token, revoke_all_sessions,
+    generate_verification_token, send_verification_email,
+    SMTP_HOST,
 )
 
-Base.metadata.create_all(bind=engine)
+# rango real de una columna INTEGER en SQLite (entero de 64 bits con signo);
+# sin este límite, un id fuera de rango revienta con OverflowError -> 500
+SQLITE_MAX_INT = 2**63 - 1
+
+MAX_BODY_SIZE = 1_000_000  # 1 MB, generoso para el payload más grande que espera esta API
 
 app = FastAPI(
     title="API Gestión de Citas Médicas",
@@ -32,6 +40,18 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_BODY_SIZE:
+        return JSONResponse(status_code=413, content={"detail": "El cuerpo de la petición es demasiado grande"})
+    return await call_next(request)
+
+
+def get_client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
 # =============================================
 # AUTH
 # =============================================
@@ -42,15 +62,20 @@ app = FastAPI(
     tags=["Autenticación"],
     summary="Registrar nuevo usuario",
     responses={
-        400: {"description": "El email ya está registrado"},
+        400: {"description": "El email o el documento de identidad ya están registrados"},
+        429: {"description": "Demasiados registros desde esta red, intenta más tarde"},
     }
 )
-def register(user: UserCreate, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == user.email).first():
-        raise HTTPException(status_code=400, detail="El email ya está registrado")
+def register(user: UserCreate, request: Request, db: Session = Depends(get_db)):
+    check_register_rate_limit(db, get_client_ip(request))
 
-    if db.query(User).filter(User.document_id == user.document_id).first():
-        raise HTTPException(status_code=400, detail="El documento de identidad ya está registrado")
+    already_exists = db.query(User).filter(
+        (User.email == user.email) | (User.document_id == user.document_id)
+    ).first()
+    if already_exists:
+        # Mensaje genérico a propósito: no revela cuál de los dos campos
+        # coincide, para no permitir enumerar emails/documentos registrados.
+        raise HTTPException(status_code=400, detail="El email o el documento de identidad ya están registrados")
 
     db_user = User(
         email=user.email,
@@ -63,8 +88,11 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         license_number=user.license_number
     )
     db.add(db_user)
+    db.flush()
+    token = generate_verification_token(db_user)
     db.commit()
     db.refresh(db_user)
+    send_verification_email(db_user.email, token)
     return db_user
 
 
@@ -75,13 +103,11 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     summary="Iniciar sesión",
     responses={
         401: {"description": "Email o contraseña incorrectos"},
+        429: {"description": "Demasiados intentos fallidos, intenta más tarde"},
     }
 )
-def login(user_data: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == user_data.email).first()
-    if not user or not verify_password(user_data.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
-
+def login(user_data: UserLogin, request: Request, db: Session = Depends(get_db)):
+    user = authenticate_user(db, user_data.email, user_data.password, get_client_ip(request))
     token = create_access_token(data={"sub": user.id, "role": user.role})
     return {"access_token": token, "token_type": "bearer"}
 
@@ -91,14 +117,88 @@ def login(user_data: UserLogin, db: Session = Depends(get_db)):
     response_model=Token,
     include_in_schema=False,
 )
-def login_for_swagger(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login_for_swagger(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     # Usado internamente por el botón "Authorize" de Swagger (form OAuth2 estándar, no expuesto en /docs)
-    user = db.query(User).filter(User.email == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
-
+    user = authenticate_user(db, form_data.username, form_data.password, get_client_ip(request))
     token = create_access_token(data={"sub": user.id, "role": user.role})
     return {"access_token": token, "token_type": "bearer"}
+
+
+@app.post(
+    "/logout",
+    response_model=MessageOut,
+    tags=["Autenticación"],
+    summary="Cerrar sesión (solo el token actual)",
+)
+def logout(
+    token: str = Depends(oauth2_scheme),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    payload = decode_token_claims(token)
+    jti, exp = payload.get("jti"), payload.get("exp")
+    if jti and exp:
+        revoke_token(db, jti, datetime.utcfromtimestamp(exp))
+    return {"detail": "Sesión cerrada. Este token ya no es válido."}
+
+
+@app.post(
+    "/logout-all",
+    response_model=MessageOut,
+    tags=["Autenticación"],
+    summary="Cerrar sesión en todos los dispositivos",
+)
+def logout_all(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    revoke_all_sessions(db, current_user)
+    return {"detail": "Todas tus sesiones fueron cerradas. Ningún token emitido antes de ahora es válido."}
+
+
+@app.get(
+    "/verify-email",
+    response_model=MessageOut,
+    tags=["Autenticación"],
+    summary="Verificar el email a partir del enlace enviado al registrarse",
+    responses={
+        400: {"description": "Token de verificación inválido o expirado"},
+    }
+)
+def verify_email(token: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.verification_token == token).first()
+    if not user or not user.verification_token_expires or user.verification_token_expires < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Token de verificación inválido o expirado")
+
+    user.is_verified = True
+    user.verification_token = None
+    user.verification_token_expires = None
+    db.commit()
+    return {"detail": "Email verificado correctamente. Ya puedes usar todas las funciones de la plataforma."}
+
+
+@app.post(
+    "/resend-verification",
+    response_model=MessageOut,
+    tags=["Autenticación"],
+    summary="Reenviar el email de verificación",
+)
+def resend_verification(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.is_verified:
+        return {"detail": "Tu email ya estaba verificado."}
+
+    token = generate_verification_token(current_user)
+    db.commit()
+    send_verification_email(current_user.email, token)
+    return {"detail": "Te reenviamos el enlace de verificación."}
+
+
+if not SMTP_HOST:
+    @app.get("/_dev/verification-token", include_in_schema=False)
+    def dev_get_verification_token(email: str, db: Session = Depends(get_db)):
+        # Solo existe cuando no hay SMTP configurado (modo desarrollo): permite
+        # a test_all.py obtener el token sin una bandeja de correo real.
+        user = db.query(User).filter(User.email == email.lower()).first()
+        if not user or not user.verification_token:
+            raise HTTPException(status_code=404, detail="No encontrado")
+        return {"token": user.verification_token}
 
 
 # =============================================
@@ -137,11 +237,15 @@ def get_my_history(
     response_model=AvailabilityOut,
     status_code=status.HTTP_201_CREATED,
     tags=["Disponibilidad"],
-    summary="Agregar horario de disponibilidad"
+    summary="Agregar horario de disponibilidad",
+    responses={
+        403: {"description": "Debes verificar tu email antes de agregar disponibilidad"},
+    }
 )
 def create_availability(
     avail: AvailabilityCreate,
     current_user: User = Depends(require_role("doctor")),
+    _verified: User = Depends(require_verified),
     db: Session = Depends(get_db)
 ):
     if avail.start_time >= avail.end_time:
@@ -169,8 +273,8 @@ def create_availability(
     }
 )
 def update_availability(
-    availability_id: int,
     update: AvailabilityUpdate,
+    availability_id: int = Path(..., gt=0, le=SQLITE_MAX_INT),
     current_user: User = Depends(require_role("doctor")),
     db: Session = Depends(get_db)
 ):
@@ -206,7 +310,7 @@ def update_availability(
     }
 )
 def delete_availability(
-    availability_id: int,
+    availability_id: int = Path(..., gt=0, le=SQLITE_MAX_INT),
     current_user: User = Depends(require_role("doctor")),
     db: Session = Depends(get_db)
 ):
@@ -239,7 +343,7 @@ def get_my_availability(
 
 @app.get(
     "/doctors",
-    response_model=List[UserOut],
+    response_model=List[DoctorPublicOut],
     tags=["Disponibilidad"],
     summary="Listar todos los médicos"
 )
@@ -277,8 +381,8 @@ def get_doctor_appointments(
     }
 )
 def update_appointment_status(
-    appointment_id: int,
     update: AppointmentUpdate,
+    appointment_id: int = Path(..., gt=0, le=SQLITE_MAX_INT),
     current_user: User = Depends(require_role("doctor")),
     db: Session = Depends(get_db)
 ):
@@ -305,12 +409,14 @@ def update_appointment_status(
     tags=["Citas"],
     summary="Crear una nueva cita",
     responses={
+        403: {"description": "Debes verificar tu email antes de agendar una cita"},
         409: {"description": "Horario no disponible o médico no disponible en ese día"},
     }
 )
 def create_appointment(
     appt: AppointmentCreate,
     current_user: User = Depends(require_role("patient")),
+    _verified: User = Depends(require_verified),
     db: Session = Depends(get_db)
 ):
     # Verificar que la fecha no sea en el pasado
@@ -377,7 +483,7 @@ def create_appointment(
     }
 )
 def cancel_appointment(
-    appointment_id: int,
+    appointment_id: int = Path(..., gt=0, le=SQLITE_MAX_INT),
     current_user: User = Depends(require_role("patient")),
     db: Session = Depends(get_db)
 ):
@@ -407,7 +513,7 @@ def cancel_appointment(
     }
 )
 def delete_appointment(
-    appointment_id: int,
+    appointment_id: int = Path(..., gt=0, le=SQLITE_MAX_INT),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -430,4 +536,7 @@ def delete_appointment(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # proxy_headers=False: esta app no corre detrás de un reverse proxy, así
+    # que no hay que confiar en X-Forwarded-For (cualquiera podría spoofearlo
+    # para evadir el rate limiting por IP en auth.py).
+    uvicorn.run(app, host="0.0.0.0", port=8000, proxy_headers=False)

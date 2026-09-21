@@ -15,9 +15,30 @@ class User(Base):
     role = Column(String)  # "patient" o "doctor"
     specialty = Column(String, nullable=True)  # solo médicos
     license_number = Column(String, nullable=True)  # solo médicos
+    tokens_valid_after = Column(DateTime, nullable=True)  # tokens con iat anterior a esto quedan revocados
+    is_verified = Column(Boolean, default=False)
+    verification_token = Column(String, nullable=True, index=True)
+    verification_token_expires = Column(DateTime, nullable=True)
 
     doctor_availability = relationship("DoctorAvailability", back_populates="doctor")
     appointments = relationship("Appointment", foreign_keys="[Appointment.patient_id]", back_populates="patient")
+
+
+# Tokens revocados individualmente vía /logout (no todas las sesiones del usuario)
+class RevokedToken(Base):
+    __tablename__ = "revoked_tokens"
+
+    jti = Column(String, primary_key=True)
+    expires_at = Column(DateTime, index=True)  # se puede borrar la fila pasada esta fecha
+
+
+class RateLimitAttempt(Base):
+    __tablename__ = "rate_limit_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope = Column(String, index=True)   # "login_email", "login_ip", "register_ip"
+    key = Column(String, index=True)     # el email o la IP según el scope
+    created_at = Column(DateTime, index=True)
 
 
 class DoctorAvailability(Base):

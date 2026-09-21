@@ -1,18 +1,34 @@
-from pydantic import BaseModel, EmailStr, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator, model_validator
 from typing import Optional
 from datetime import datetime
 
 
 # ===== AUTH =====
 class UserCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: EmailStr
-    password: str
-    full_name: str
-    phone: str
+    password: str = Field(..., min_length=8, max_length=72)
+    full_name: str = Field(..., min_length=1, max_length=100)
+    phone: str = Field(..., min_length=1, max_length=20)
     document_id: str
     role: str  # "patient" o "doctor"
-    specialty: Optional[str] = None       # requerido si role == "doctor"
-    license_number: Optional[str] = None  # requerido si role == "doctor"
+    specialty: Optional[str] = Field(None, max_length=100)       # requerido si role == "doctor"
+    license_number: Optional[str] = Field(None, max_length=50)   # requerido si role == "doctor"
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v):
+        return v.lower()
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, v):
+        if not any(c.isalpha() for c in v):
+            raise ValueError("La contraseña debe contener al menos una letra")
+        if not any(c.isdigit() for c in v):
+            raise ValueError("La contraseña debe contener al menos un número")
+        return v
 
     @field_validator("phone")
     @classmethod
@@ -46,13 +62,19 @@ class UserCreate(BaseModel):
 
 
 class UserLogin(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: EmailStr
-    password: str
+    password: str = Field(..., max_length=72)
 
 
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+
+class MessageOut(BaseModel):
+    detail: str
 
 
 # ===== USERS =====
@@ -65,6 +87,18 @@ class UserOut(BaseModel):
     role: str
     specialty: Optional[str] = None
     license_number: Optional[str] = None
+    is_verified: bool
+
+    class Config:
+        from_attributes = True
+
+
+# Datos de un médico visibles públicamente (sin email/teléfono/documento)
+class DoctorPublicOut(BaseModel):
+    id: int
+    full_name: str
+    specialty: Optional[str] = None
+    license_number: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -72,6 +106,8 @@ class UserOut(BaseModel):
 
 # ===== AVAILABILITY =====
 class AvailabilityCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     day_of_week: int
     start_time: str
     end_time: str
@@ -94,6 +130,8 @@ class AvailabilityCreate(BaseModel):
 
 
 class AvailabilityUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     day_of_week: Optional[int] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
@@ -136,10 +174,12 @@ class AvailabilityOut(BaseModel):
 
 # ===== APPOINTMENTS =====
 class AppointmentCreate(BaseModel):
-    doctor_id: int
+    model_config = ConfigDict(extra="forbid")
+
+    doctor_id: int = Field(..., gt=0)
     date: str  # YYYY-MM-DD
     time: str  # HH:MM
-    reason: Optional[str] = None
+    reason: Optional[str] = Field(None, max_length=500)
 
     @field_validator("date")
     @classmethod
@@ -161,6 +201,8 @@ class AppointmentCreate(BaseModel):
 
 
 class AppointmentUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     status: str
 
     @field_validator("status")

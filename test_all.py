@@ -49,6 +49,15 @@ def check(label, response, expected_status):
     return response
 
 
+def verify_user(email):
+    # Solo funciona si el servidor corre sin SMTP configurado (modo dev):
+    # /_dev/verification-token expone el token en vez de mandarlo por correo.
+    r = requests.get(f"{BASE}/_dev/verification-token", params={"email": email})
+    r.raise_for_status()
+    token = r.json()["token"]
+    return requests.get(f"{BASE}/verify-email", params={"token": token})
+
+
 # ==========================================
 section("0. VERIFICAR QUE EL SERVIDOR ESTÉ CORRIENDO")
 # ==========================================
@@ -77,32 +86,37 @@ LOPEZ_NO_WORK_OFFSET = 2
 section("1. REGISTRAR 3 PACIENTES")
 # ==========================================
 pacientes = [
-    {"email": f"carlos.{SUFFIX}@email.com", "password": "123456", "full_name": "Carlos García",
+    {"email": f"carlos.{SUFFIX}@email.com", "password": "Segura123", "full_name": "Carlos García",
      "phone": "+573001112233", "document_id": f"CG{SUFFIX}1", "role": "patient"},
-    {"email": f"maria.{SUFFIX}@email.com", "password": "123456", "full_name": "María López",
+    {"email": f"maria.{SUFFIX}@email.com", "password": "Segura123", "full_name": "María López",
      "phone": "+573002223344", "document_id": f"ML{SUFFIX}2", "role": "patient"},
-    {"email": f"pedro.{SUFFIX}@email.com", "password": "123456", "full_name": "Pedro Ramírez",
+    {"email": f"pedro.{SUFFIX}@email.com", "password": "Segura123", "full_name": "Pedro Ramírez",
      "phone": "+573003334455", "document_id": f"PR{SUFFIX}3", "role": "patient"},
 ]
 for p in pacientes:
     check(f"Registrar paciente {p['full_name']}", requests.post(f"{BASE}/register", json=p), 201)
+    check(f"Verificar email de {p['full_name']}", verify_user(p["email"]), 200)
 
 # ==========================================
 section("2. REGISTRAR 3 MÉDICOS")
 # ==========================================
 medicos = [
-    {"email": f"dr.lopez.{SUFFIX}@email.com", "password": "123456", "full_name": "Dr. Carlos López",
+    {"email": f"dr.lopez.{SUFFIX}@email.com", "password": "Segura123", "full_name": "Dr. Carlos López",
      "phone": "+573009876543", "document_id": f"DL{SUFFIX}4", "role": "doctor",
      "specialty": "Medicina General", "license_number": f"MG-{SUFFIX}-1"},
-    {"email": f"dra.martinez.{SUFFIX}@email.com", "password": "123456", "full_name": "Dra. Ana Martínez",
+    {"email": f"dra.martinez.{SUFFIX}@email.com", "password": "Segura123", "full_name": "Dra. Ana Martínez",
      "phone": "+573005551234", "document_id": f"AM{SUFFIX}5", "role": "doctor",
      "specialty": "Pediatría", "license_number": f"MG-{SUFFIX}-2"},
-    {"email": f"dr.garcia.{SUFFIX}@email.com", "password": "123456", "full_name": "Dr. Luis García",
+    {"email": f"dr.garcia.{SUFFIX}@email.com", "password": "Segura123", "full_name": "Dr. Luis García",
      "phone": "+573006667788", "document_id": f"LG{SUFFIX}6", "role": "doctor",
      "specialty": "Cardiología", "license_number": f"MG-{SUFFIX}-3"},
 ]
+doctor_ids = {}
 for m in medicos:
-    check(f"Registrar médico {m['full_name']}", requests.post(f"{BASE}/register", json=m), 201)
+    r = check(f"Registrar médico {m['full_name']}", requests.post(f"{BASE}/register", json=m), 201)
+    if r.status_code == 201:
+        doctor_ids[m["email"]] = r.json()["id"]
+    check(f"Verificar email de {m['full_name']}", verify_user(m["email"]), 200)
 
 # ==========================================
 section("3. LOGIN - TODOS LOS USUARIOS")
@@ -184,10 +198,8 @@ section("7. CREAR CITAS VÁLIDAS")
 d_ok1 = dates[LOPEZ_WORK_OFFSETS[1]].isoformat()  # un día que López sí trabaja
 d_ok2 = dates[LOPEZ_WORK_OFFSETS[2]].isoformat()
 
-# necesitamos el id real del Dr. López (lo obtenemos de /doctors)
-doctores = requests.get(f"{BASE}/doctors").json()
-id_lopez = next(d["id"] for d in doctores if d["email"] == medicos[0]["email"])
-id_martinez = next(d["id"] for d in doctores if d["email"] == medicos[1]["email"])
+id_lopez = doctor_ids[medicos[0]["email"]]
+id_martinez = doctor_ids[medicos[1]["email"]]
 
 r = requests.post(f"{BASE}/appointments",
                    json={"doctor_id": id_lopez, "date": d_ok1, "time": "09:30", "reason": "Dolor de cabeza"},
@@ -301,14 +313,43 @@ check("Rol inválido",
       422)
 check("Médico sin especialidad (campo requerido por rol)",
       requests.post(f"{BASE}/register",
-                     json={"email": f"docsin.{SUFFIX}@email.com", "password": "123456", "full_name": "Doc Incompleto",
+                     json={"email": f"docsin.{SUFFIX}@email.com", "password": "Segura123", "full_name": "Doc Incompleto",
                            "phone": "+573000000000", "document_id": f"DOCX{SUFFIX}", "role": "doctor"}),
       422)
 check("Documento con formato inválido",
       requests.post(f"{BASE}/register",
-                     json={"email": f"docformato.{SUFFIX}@email.com", "password": "123456", "full_name": "X",
+                     json={"email": f"docformato.{SUFFIX}@email.com", "password": "Segura123", "full_name": "X",
                            "phone": "+573000000000", "document_id": "a b", "role": "patient"}),
       422)
+
+# ==========================================
+section("12. VERIFICACIÓN DE EMAIL OBLIGATORIA PARA AGENDAR")
+# ==========================================
+sin_verificar = {"email": f"sinverificar.{SUFFIX}@email.com", "password": "Segura123", "full_name": "Sin Verificar",
+                  "phone": "+573000000099", "document_id": f"NV{SUFFIX}9", "role": "patient"}
+check("Registrar paciente sin verificar", requests.post(f"{BASE}/register", json=sin_verificar), 201)
+token_nv = requests.post(f"{BASE}/login", json={"email": sin_verificar["email"], "password": sin_verificar["password"]}).json()["access_token"]
+headers_nv = {"Authorization": f"Bearer {token_nv}"}
+check("Paciente sin verificar intenta agendar cita (prohibido)",
+      requests.post(f"{BASE}/appointments", json={"doctor_id": id_lopez, "date": d_ok1, "time": "09:30"}, headers=headers_nv),
+      403)
+check("Reenviar verificación", requests.post(f"{BASE}/resend-verification", headers=headers_nv), 200)
+check("Verificar email tras reenvío", verify_user(sin_verificar["email"]), 200)
+check("Ahora sí puede agendar (mismo horario que ya usó Carlos, debe dar 409 no 403)",
+      requests.post(f"{BASE}/appointments", json={"doctor_id": id_lopez, "date": d_ok1, "time": "09:30"}, headers=headers_nv),
+      409)
+
+# ==========================================
+section("13. REVOCACIÓN DE SESIÓN (/logout Y /logout-all)")
+# ==========================================
+token_a = requests.post(f"{BASE}/login", json={"email": pacientes[0]["email"], "password": pacientes[0]["password"]}).json()["access_token"]
+token_b = requests.post(f"{BASE}/login", json={"email": pacientes[0]["email"], "password": pacientes[0]["password"]}).json()["access_token"]
+check("Token A funciona antes de logout", requests.get(f"{BASE}/patients/me", headers={"Authorization": f"Bearer {token_a}"}), 200)
+check("Logout revoca solo el token A", requests.post(f"{BASE}/logout", headers={"Authorization": f"Bearer {token_a}"}), 200)
+check("Token A ya no funciona", requests.get(f"{BASE}/patients/me", headers={"Authorization": f"Bearer {token_a}"}), 401)
+check("Token B (otra sesión) sigue funcionando", requests.get(f"{BASE}/patients/me", headers={"Authorization": f"Bearer {token_b}"}), 200)
+check("Logout-all revoca TODAS las sesiones", requests.post(f"{BASE}/logout-all", headers={"Authorization": f"Bearer {token_b}"}), 200)
+check("Token B ya no funciona tras logout-all", requests.get(f"{BASE}/patients/me", headers={"Authorization": f"Bearer {token_b}"}), 401)
 
 # ==========================================
 section("RESUMEN FINAL")

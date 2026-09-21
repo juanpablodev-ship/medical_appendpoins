@@ -14,6 +14,8 @@ Sistema backend para coordinar la disponibilidad de profesionales médicos y la 
 6. [Endpoints Disponibles](#6-endpoints-disponibles)
 7. [Base de Datos](#7-base-de-datos)
 8. [Flujo de Ejemplo Completo](#8-flujo-de-ejemplo-completo)
+9. [Migraciones con Alembic](#9-migraciones-con-alembic)
+10. [Seguridad](#10-seguridad)
 
 ---
 
@@ -55,6 +57,7 @@ Esto instalará automáticamente:
 | `python-multipart` | Soporte para formularios en FastAPI |
 | `pydantic` | Validación de datos de entrada |
 | `email-validator` | Validación de formato de email |
+| `alembic` | Migraciones de base de datos |
 
 Si algún paquete falla, instálalo por separado:
 ```bash
@@ -72,10 +75,17 @@ brew install --cask db-browser-for-sqlite
 
 ## 3. Ejecución
 
-### 3.1 Iniciar el servidor
+### 3.1 Crear/actualizar la base de datos con Alembic
+El esquema de la base de datos ya **no** se crea automáticamente al levantar el servidor — lo gestiona Alembic. La primera vez (o después de clonar el repo), corre:
 ```bash
 cd ~/Desktop/medical-appointments
-python3 -m uvicorn main:app --reload --port 8000
+alembic upgrade head
+```
+Esto crea `medical_appointments.db` con las tablas `users`, `doctor_availability` y `appointments` ya actualizadas. Ver la sección [9. Migraciones con Alembic](#9-migraciones-con-alembic) para más detalle.
+
+### 3.2 Iniciar el servidor
+```bash
+python3 -m uvicorn main:app --reload --port 8000 --no-proxy-headers
 ```
 
 Verás en la terminal:
@@ -87,7 +97,7 @@ INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 ```
 
-### 3.2 Abrir Swagger (documentación interactiva)
+### 3.3 Abrir Swagger (documentación interactiva)
 Abre tu navegador y ve a:
 ```
 http://localhost:8000/docs
@@ -95,12 +105,12 @@ http://localhost:8000/docs
 
 Ahí puedes probar todos los endpoints directamente desde el navegador.
 
-### 3.3 Abrir ReDoc (documentación alternativa)
+### 3.4 Abrir ReDoc (documentación alternativa)
 ```
 http://localhost:8000/redoc
 ```
 
-### 3.4 Detener el servidor
+### 3.5 Detener el servidor
 En la terminal presiona `Ctrl + C`.
 
 ---
@@ -117,7 +127,11 @@ medical-appointments/
 ├── auth.py              # Autenticación JWT y control de roles
 ├── requirements.txt     # Lista de dependencias
 ├── test_all.py          # Script de pruebas end-to-end contra el servidor
-└── medical_appointments.db  # Base de datos (se crea automáticamente)
+├── alembic.ini          # Configuración de Alembic (migraciones)
+├── alembic/
+│   ├── env.py           # Conecta Alembic con Base.metadata y DATABASE_URL
+│   └── versions/        # Cada archivo es una migración del esquema
+└── medical_appointments.db  # Base de datos (se crea con `alembic upgrade head`)
 ```
 
 ### Explicación de cada archivo:
@@ -157,7 +171,7 @@ POST /register
 ```json
 {
   "email": "juan@email.com",
-  "password": "123456",
+  "password": "Segura123",
   "full_name": "Juan Pérez",
   "phone": "+573001234567",
   "document_id": "12345678",
@@ -172,7 +186,7 @@ POST /register
 ```json
 {
   "email": "dr.lopez@email.com",
-  "password": "123456",
+  "password": "Segura123",
   "full_name": "Dr. Carlos López",
   "phone": "+573009876543",
   "document_id": "87654321",
@@ -190,7 +204,7 @@ POST /login
 ```json
 {
   "email": "juan@email.com",
-  "password": "123456"
+  "password": "Segura123"
 }
 ```
 Respuesta:
@@ -219,6 +233,10 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 |--------|------|-------------|---------------|
 | POST | `/register` | Registrar usuario nuevo | No |
 | POST | `/login` | Iniciar sesión | No |
+| POST | `/logout` | Cerrar sesión (revoca solo el token actual) | JWT |
+| POST | `/logout-all` | Cerrar sesión en todos los dispositivos | JWT |
+| GET | `/verify-email` | Verificar el email con el token recibido al registrarse | No |
+| POST | `/resend-verification` | Reenviar el enlace de verificación | JWT |
 
 ### Pacientes
 | Método | Ruta | Descripción | Autenticación |
@@ -253,6 +271,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
 | 404 | Recurso no encontrado (cita, médico) |
 | 409 | Conflicto (horario no disponible, doble reserva) |
 | 422 | Error de validación en los datos |
+| 429 | Demasiados intentos de login fallidos |
 
 ---
 
@@ -290,7 +309,7 @@ curl -X POST http://localhost:8000/register \
   -H "Content-Type: application/json" \
   -d '{
     "email": "dr.lopez@email.com",
-    "password": "123456",
+    "password": "Segura123",
     "full_name": "Dr. Carlos López",
     "phone": "+573009876543",
     "document_id": "87654321",
@@ -299,6 +318,7 @@ curl -X POST http://localhost:8000/register \
     "license_number": "MG-001"
   }'
 ```
+> Recuerda verificar también este email (mismo procedimiento del Paso 2.1) antes del Paso 4 — si no, `/availability` te devolverá 403.
 
 ### Paso 2: Registrar paciente
 ```bash
@@ -306,7 +326,7 @@ curl -X POST http://localhost:8000/register \
   -H "Content-Type: application/json" \
   -d '{
     "email": "juan@email.com",
-    "password": "123456",
+    "password": "Segura123",
     "full_name": "Juan Pérez",
     "phone": "+573001234567",
     "document_id": "12345678",
@@ -314,13 +334,25 @@ curl -X POST http://localhost:8000/register \
   }'
 ```
 
+### Paso 2.1: Verificar el email (requerido antes de poder agendar)
+Si no configuraste `SMTP_HOST`, el enlace de verificación se imprime en la **consola donde corre el servidor**, con este formato:
+```
+[VERIFICACIÓN DE EMAIL] SMTP no configurado. Enlace para juan@email.com:
+  http://localhost:8000/verify-email?token=<TOKEN>
+```
+Ábrelo en el navegador, o con curl:
+```bash
+curl "http://localhost:8000/verify-email?token=<TOKEN>"
+```
+Repite esto también para el médico registrado en el Paso 1 — sin verificar, tampoco podrá agregar disponibilidad en el Paso 4.
+
 ### Paso 3: Login del médico
 ```bash
 curl -X POST http://localhost:8000/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "dr.lopez@email.com",
-    "password": "123456"
+    "password": "Segura123"
   }'
 ```
 Copia el `access_token` de la respuesta.
@@ -344,7 +376,7 @@ curl -X POST http://localhost:8000/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "juan@email.com",
-    "password": "123456"
+    "password": "Segura123"
   }'
 ```
 
@@ -355,12 +387,12 @@ curl -X POST http://localhost:8000/appointments \
   -H "Authorization: Bearer <TOKEN_DEL_PACIENTE>" \
   -d '{
     "doctor_id": 1,
-    "date": "2026-09-21",
+    "date": "2026-09-28",
     "time": "10:00",
     "reason": "Dolor de cabeza persistente"
   }'
 ```
-> La fecha debe caer en un día en que el médico tenga disponibilidad (en el Paso 4 configuramos `day_of_week: 0` = lunes) y debe ser una fecha futura respecto a hoy.
+> La fecha debe caer en un día en que el médico tenga disponibilidad (en el Paso 4 configuramos `day_of_week: 0` = lunes) y debe ser una fecha futura respecto a hoy. Ajusta `"2026-09-28"` por la fecha del próximo lunes cuando lo pruebes.
 
 ### Paso 7: Médico confirma la cita
 ```bash
@@ -380,9 +412,143 @@ curl -X PATCH http://localhost:8000/appointments/1/cancel \
 
 ---
 
+## 9. Migraciones con Alembic
+
+El esquema de la base de datos (tablas y columnas) se gestiona con [Alembic](https://alembic.sqlalchemy.org/), no con `Base.metadata.create_all()`. Esto evita el problema de que agregar un campo nuevo a `models.py` no se refleje en una base de datos que ya existía (justo el bug que tuvimos al agregar `specialty`/`license_number`).
+
+### 9.1 Cómo está configurado
+- `alembic.ini`: configuración general. La URL de conexión **no** está aquí — se toma de `database.DATABASE_URL` dentro de `alembic/env.py` para no duplicar esa configuración en dos lugares.
+- `alembic/env.py`: importa `Base` (de `database.py`) y los modelos (de `models.py`) para que Alembic sepa comparar el esquema real contra lo definido en `models.py`.
+- `alembic/versions/`: cada archivo aquí es una migración (una versión del esquema). **Sí se suben al repo** — son código, no datos.
+
+### 9.2 Comandos que vas a usar
+
+**Crear/actualizar la base de datos** (correr después de clonar el repo, o después de traer cambios de otra persona):
+```bash
+alembic upgrade head
+```
+
+**Después de modificar `models.py`** (agregar/quitar una columna, una tabla, etc.), generar la migración automáticamente:
+```bash
+alembic revision --autogenerate -m "descripción corta del cambio"
+```
+Alembic compara `models.py` contra el estado real de la base de datos y genera el archivo en `alembic/versions/`. **Revisa siempre el archivo generado** antes de aplicarlo — el autogenerate no detecta todo perfectamente (por ejemplo, renombrar una columna lo interpreta como "borrar una y crear otra nueva", perdiendo esos datos).
+
+**Aplicar la migración que acabas de generar:**
+```bash
+alembic upgrade head
+```
+
+**Deshacer la última migración** (por si algo salió mal):
+```bash
+alembic downgrade -1
+```
+
+**Ver el historial de migraciones:**
+```bash
+alembic history
+```
+
+**Ver en qué versión está la base de datos actual:**
+```bash
+alembic current
+```
+
+### 9.3 Si ya tenías una base de datos de antes de usar Alembic
+Si tu `medical_appointments.db` ya tenía las tablas creadas por el viejo `create_all()` y coinciden con `models.py` actual, no corras `alembic upgrade head` directamente (fallaría con "la tabla ya existe"). En su lugar, márcala como ya actualizada:
+```bash
+alembic stamp head
+```
+
+---
+
+## 10. Seguridad
+
+### 10.1 Política de contraseñas
+Al registrarse, la contraseña debe tener **mínimo 8 caracteres** y contener **al menos una letra y un número** (máximo 72 caracteres, límite propio de bcrypt).
+
+### 10.2 Rate limiting en login
+`/login` y `/token` bloquean con **429 Too Many Requests** tras **5 intentos fallidos** en **5 minutos** para el mismo email — incluso si el 6.º intento usa la contraseña correcta. El contador se reinicia tras un login exitoso o al pasar la ventana de 5 minutos.
+
+### 10.3 Rechazo de campos desconocidos
+Todos los endpoints que reciben datos (`/register`, `/login`, `/availability`, `/appointments`, etc.) rechazan con **422** cualquier campo que no esté definido en el schema — protege contra intentos de colar campos inesperados en el body.
+
+### 10.4 Clave secreta del JWT (`SECRET_KEY`)
+`auth.py` lee la clave de firma de los tokens desde la variable de entorno `SECRET_KEY`. Si no la defines, el servidor genera una aleatoria en cada arranque (verás un aviso en la consola) — útil para desarrollo, pero significa que los tokens dejan de ser válidos al reiniciar. Para un entorno estable o de producción, defínela antes de levantar el servidor:
+
+```bash
+export SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+uvicorn main:app --reload --no-proxy-headers
+```
+En Windows (PowerShell):
+```powershell
+$env:SECRET_KEY = python -c "import secrets; print(secrets.token_hex(32))"
+uvicorn main:app --reload --no-proxy-headers
+```
+> **Nunca** subas el valor de `SECRET_KEY` al repositorio ni lo hardcodees en el código.
+
+### 10.5 Emails normalizados a minúsculas
+El email se guarda y se compara siempre en minúsculas (`Juan@Mail.com` y `juan@mail.com` son la misma cuenta). Evita registros duplicados y bypass del rate limiting jugando con mayúsculas/minúsculas.
+
+### 10.6 IDs de ruta acotados a rango válido
+`appointment_id` y `availability_id` en la URL solo aceptan enteros positivos hasta el máximo de un `INTEGER` de SQLite (2⁶³-1). Un ID fuera de rango devuelve **422** en vez de un 500 (antes, SQLite lanzaba `OverflowError` sin capturar).
+
+### 10.7 `/doctors` no expone datos personales
+El listado público de médicos (sin login) solo devuelve `id`, `full_name`, `specialty` y `license_number`. Email, teléfono y documento de identidad **no** se exponen ahí — solo son visibles para el propio médico vía `/patients/me`-equivalente autenticado.
+
+### 10.8 Mensaje genérico en registros duplicados
+`/register` devuelve el mismo mensaje ("El email o el documento de identidad ya están registrados") sin importar cuál de los dos coincide, para no permitir enumerar qué emails ya están registrados en el sistema probando uno por uno.
+
+### 10.9 Límite de tamaño del body
+Cualquier request con `Content-Length` mayor a 1 MB se rechaza con **413** antes de procesarse. Nota: esto depende de que el cliente envíe el header `Content-Length` (no cubre uploads con `Transfer-Encoding: chunked`); en producción, este límite debería reforzarse también a nivel de proxy/servidor (nginx, etc.).
+
+### 10.10 Rate limiting también por IP (password spraying)
+Además del límite por email ([10.2](#102-rate-limiting-en-login)), `/login` y `/token` bloquean con **429** una IP que acumule **20 intentos fallidos en 5 minutos**, sin importar contra cuántas cuentas distintas — protege contra "password spraying" (probar una misma contraseña contra muchos emails desde el mismo origen, donde cada cuenta individual nunca llega a su propio límite).
+
+### 10.11 Límite de registros por IP
+`/register` bloquea con **429** una IP que cree más de **30 cuentas en una hora**. No reemplaza un CAPTCHA real, pero frena la creación automatizada de cuentas en volumen.
+
+### 10.12 Revocación de sesión individual (`/logout`) y global (`/logout-all`)
+Cada token incluye un identificador único (`jti`) y cuándo fue emitido (`iat`).
+- **`POST /logout`**: revoca **solo el token usado en esa petición** (guarda su `jti` en la tabla `revoked_tokens`). Otras sesiones del mismo usuario (otro dispositivo, otra pestaña) siguen funcionando.
+- **`POST /logout-all`**: revoca **todas** las sesiones del usuario de una vez, marcando en `users.tokens_valid_after` el momento del cierre — cualquier token emitido antes queda inválido de inmediato, sin importar su `jti`.
+
+### 10.13 El servidor no confía en `X-Forwarded-For`
+`main.py` levanta uvicorn con `proxy_headers=False` (y el README documenta correr con `--no-proxy-headers`). Por defecto, uvicorn confía en el header `X-Forwarded-For` cuando la conexión viene de `127.0.0.1` — sin este fix, cualquiera podía mandar ese header con un valor distinto en cada request y evadir por completo el rate limiting por IP ([10.10](#1010-rate-limiting-también-por-ip-password-spraying) y [10.11](#1011-límite-de-registros-por-ip)), ya que cada request parecía venir de una IP "nueva". **Si en algún momento pones esta API detrás de un reverse proxy real** (nginx, un load balancer), vas a necesitar reactivar `--proxy-headers` y restringir `--forwarded-allow-ips` a la IP exacta de ese proxy — nunca a `*` ni dejarlo abierto.
+
+### 10.14 Rate limiting persistido en base de datos
+Los intentos fallidos de login/registro se guardan en la tabla `rate_limit_attempts` (no en un diccionario en memoria del proceso). Esto significa:
+- **Sobrevive reinicios**: reiniciar el servidor ya no resetea el contador de intentos fallidos de un atacante.
+- **Se comparte entre workers/instancias**: si corres `uvicorn --workers 4` o varias instancias apuntando a la misma base de datos, todas ven el mismo contador (con un dict en memoria, cada worker tenía el suyo, multiplicando el límite real por el número de workers).
+- Las filas vencidas se borran en cada consulta, así la tabla no crece sin límite.
+
+Para escalar a múltiples servidores con bases de datos separadas, o para mayor performance en tráfico muy alto, el siguiente paso natural sería mover esto a un store compartido como Redis — pero para el volumen de esta app, SQLite es suficiente y evita sumar una dependencia de infraestructura nueva.
+
+### 10.15 Verificación de email (sustituto de CAPTCHA)
+Un CAPTCHA tradicional no aplica bien a una API JSON pura sin frontend (no hay dónde renderizar el widget). En su lugar, `/register` exige verificar el email antes de poder usar las funciones que realmente generan valor en el sistema:
+- Al registrarse, el usuario queda con `is_verified: false` y se genera un enlace de un solo uso (`GET /verify-email?token=...`), válido por 24 horas.
+- **`POST /appointments`** (agendar cita) y **`POST /availability`** (agregar disponibilidad) devuelven **403** si el usuario no verificó su email. El resto de acciones (login, ver perfil, ver historial) siguen funcionando sin verificar.
+- **`POST /resend-verification`** (autenticado) reenvía el enlace si el original expiró o se perdió.
+- El envío real de correos usa `smtplib` (nada de dependencias nuevas). Si no configuras SMTP, el enlace se imprime en la consola del servidor — útil para desarrollo, pero en producción **debes** configurar estas variables de entorno:
+  ```bash
+  export SMTP_HOST=smtp.tu-proveedor.com
+  export SMTP_PORT=587
+  export SMTP_USER=tu-usuario
+  export SMTP_PASSWORD=tu-contraseña
+  export APP_BASE_URL=https://tu-dominio.com
+  ```
+- Mientras `SMTP_HOST` no esté configurado, existe además `GET /_dev/verification-token?email=...` (oculto de `/docs`) que expone el token directamente — así `test_all.py` puede verificar cuentas sin una bandeja de correo real. **Este endpoint deja de existir automáticamente en cuanto configuras `SMTP_HOST`.**
+
+### 10.16 Limitaciones conocidas (no corregidas)
+- No es un CAPTCHA real: alguien con acceso a muchos emails desechables (temp-mail) todavía podría verificar cuentas automatizadas una por una — pero ya no puede hacerlo con solo un script contra `/register`, necesita resolver la verificación de cada email.
+- `/logout` y `/logout-all` no muestran al usuario una lista de "sesiones activas" (IP, dispositivo, fecha) para elegir cuál cerrar — solo existe "esta" o "todas".
+
+---
+
 ## Notas
 
-- La base de datos `medical_appointments.db` se crea automáticamente al ejecutar el servidor por primera vez.
+- La base de datos `medical_appointments.db` se crea/actualiza corriendo `alembic upgrade head` (ver [sección 9](#9-migraciones-con-alembic)) — ya no se crea sola al levantar el servidor.
 - Los tokens JWT duran **60 minutos** antes de expirar.
 - Las contraseñas se almacenan hasheadas con **bcrypt** (nunca en texto plano).
 - La fecha y hora de las citas se almacenan como strings para mayor compatibilidad con SQLite.
+- Un usuario recién registrado **no puede** agendar citas ni agregar disponibilidad hasta verificar su email (ver [10.15](#1015-verificación-de-email-sustituto-de-captcha)). Sí puede iniciar sesión y ver su perfil sin verificar.
