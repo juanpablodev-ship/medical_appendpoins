@@ -170,6 +170,14 @@ alembic upgrade head
 Esto crea `medical_appointments.db` con las tablas `users`, `doctor_availability` y `appointments` ya actualizadas. Ver la sección [9. Migraciones con Alembic](#9-migraciones-con-alembic) para más detalle.
 
 ### 3.2 Iniciar el servidor
+
+**Forma recomendada** (igual en macOS y Windows, no requiere acordarse de ningún flag):
+```bash
+python3 run.py   # macOS/Linux
+python run.py     # Windows
+```
+
+**Alternativa manual** (equivalente, pero **debes** incluir `--no-proxy-headers` a mano cada vez — si se te olvida, el rate limiting por IP queda evadible con un header `X-Forwarded-For` falso, ver [10.13](#1013-el-servidor-no-confía-en-x-forwarded-for)):
 ```bash
 uvicorn main:app --reload --port 8000 --no-proxy-headers
 ```
@@ -218,6 +226,7 @@ python security_test.py    # Windows: equivalente
 medical-appointments/
 │
 ├── main.py              # Archivo principal - todos los endpoints
+├── run.py               # Punto de entrada recomendado para levantar el servidor
 ├── database.py          # Configuración de la base de datos SQLite
 ├── models.py            # Modelos de tablas (User, Availability, Appointment)
 ├── schemas.py           # Validaciones con Pydantic
@@ -614,7 +623,13 @@ Cada token incluye un identificador único (`jti`) y cuándo fue emitido (`iat`)
 - **`POST /logout-all`**: revoca **todas** las sesiones del usuario de una vez, marcando en `users.tokens_valid_after` el momento del cierre — cualquier token emitido antes queda inválido de inmediato, sin importar su `jti`.
 
 ### 10.13 El servidor no confía en `X-Forwarded-For`
-`main.py` levanta uvicorn con `proxy_headers=False` (y el README documenta correr con `--no-proxy-headers`). Por defecto, uvicorn confía en el header `X-Forwarded-For` cuando la conexión viene de `127.0.0.1` — sin este fix, cualquiera podía mandar ese header con un valor distinto en cada request y evadir por completo el rate limiting por IP ([10.10](#1010-rate-limiting-también-por-ip-password-spraying) y [10.11](#1011-límite-de-registros-por-ip)), ya que cada request parecía venir de una IP "nueva". **Si en algún momento pones esta API detrás de un reverse proxy real** (nginx, un load balancer), vas a necesitar reactivar `--proxy-headers` y restringir `--forwarded-allow-ips` a la IP exacta de ese proxy — nunca a `*` ni dejarlo abierto.
+Por defecto, uvicorn confía en el header `X-Forwarded-For` cuando la conexión viene de `127.0.0.1` — sin desactivar esto, cualquiera podía mandar ese header con un valor distinto en cada request y evadir por completo el rate limiting por IP ([10.10](#1010-rate-limiting-también-por-ip-password-spraying) y [10.11](#1011-límite-de-registros-por-ip)), ya que cada request parecía venir de una IP "nueva". `security_test.py` prueba esto exactamente y lo marca como 🚨 si el servidor no está bien configurado.
+
+La primera versión de este fix dependía de que corrieras `uvicorn` con el flag `--no-proxy-headers` **a mano, cada vez** — fácil de olvidar, y de hecho `security_test.py` detectó justo eso en una corrida sin el flag. Por eso ahora existe **`run.py`**: levanta uvicorn con `proxy_headers=False` ya fijado en el código, así no depende de que nadie se acuerde de un flag. **Usa `python run.py` / `python3 run.py` en vez del comando `uvicorn` a secas** (ver [3.2](#32-iniciar-el-servidor)).
+
+`main.py` también fija `proxy_headers=False` en su propio bloque `if __name__ == "__main__":`, por si alguna vez lo corres con `python main.py` directamente.
+
+**Si en algún momento pones esta API detrás de un reverse proxy real** (nginx, un load balancer), vas a necesitar reactivar la confianza en el header (`proxy_headers=True` y `forwarded_allow_ips` con la IP exacta de ese proxy) — nunca dejarlo abierto a `*`.
 
 ### 10.14 Rate limiting persistido en base de datos
 Los intentos fallidos de login/registro se guardan en la tabla `rate_limit_attempts` (no en un diccionario en memoria del proceso). Esto significa:
