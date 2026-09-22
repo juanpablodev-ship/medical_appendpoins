@@ -87,10 +87,17 @@ def check_register_rate_limit(db: Session, client_ip: str):
 
 
 def verify_password(plain_password, hashed_password):
+    # bcrypt no soporta contraseñas de más de 72 bytes. Según la versión
+    # instalada, algunas implementaciones truncan en silencio y otras lanzan
+    # ValueError — no hay que depender de cuál hace cada máquina.
+    if len(plain_password.encode("utf-8")) > 72:
+        return False
     return pwd_context.verify(plain_password, hashed_password)
 
 
 def hash_password(password):
+    if len(password.encode("utf-8")) > 72:
+        raise ValueError("La contraseña no puede superar 72 bytes")
     return pwd_context.hash(password)
 
 

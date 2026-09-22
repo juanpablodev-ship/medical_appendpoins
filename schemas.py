@@ -8,7 +8,7 @@ class UserCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: EmailStr
-    password: str = Field(..., min_length=8, max_length=72)
+    password: str = Field(..., min_length=8, max_length=200)
     full_name: str = Field(..., min_length=1, max_length=100)
     phone: str = Field(..., min_length=1, max_length=20)
     document_id: str
@@ -24,6 +24,10 @@ class UserCreate(BaseModel):
     @field_validator("password")
     @classmethod
     def validate_password_strength(cls, v):
+        # bcrypt tiene un límite real de 72 BYTES (no caracteres) — con
+        # acentos, ñ, emojis, etc. el conteo de caracteres no basta.
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("La contraseña no puede superar 72 bytes (unos 72 caracteres si son solo letras/números sin acentos)")
         if not any(c.isalpha() for c in v):
             raise ValueError("La contraseña debe contener al menos una letra")
         if not any(c.isdigit() for c in v):
@@ -65,7 +69,14 @@ class UserLogin(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: EmailStr
-    password: str = Field(..., max_length=72)
+    password: str = Field(..., max_length=200)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_byte_length(cls, v):
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("La contraseña no puede superar 72 bytes")
+        return v
 
 
 class Token(BaseModel):

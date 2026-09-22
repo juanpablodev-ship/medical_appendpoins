@@ -569,7 +569,9 @@ alembic stamp head
 Todo lo de esta sección está verificado con `security_test.py` (ver más abajo), un script de pentest que ataca la API a propósito y confirma que cada defensa responda como debe.
 
 ### 10.1 Política de contraseñas
-Al registrarse, la contraseña debe tener **mínimo 8 caracteres** y contener **al menos una letra y un número** (máximo 72 caracteres, límite propio de bcrypt).
+Al registrarse, la contraseña debe tener **mínimo 8 caracteres** y contener **al menos una letra y un número**. El límite real de bcrypt es **72 bytes**, no 72 caracteres — con tildes, `ñ` o emojis, una contraseña de 72 caracteres puede pesar más de 72 bytes en UTF-8, así que la validación cuenta bytes, no caracteres.
+
+> **Nota de compatibilidad**: según la versión de `bcrypt` instalada (no está fijada en `requirements.txt`), pasarle una contraseña de más de 72 bytes directamente a la librería puede lanzar `ValueError` en vez de simplemente rechazarla — el comportamiento cambió entre versiones y no es igual en todas las máquinas. Por eso `auth.py` valida el largo en bytes **antes** de llamar a bcrypt en `verify_password()`/`hash_password()`, sin depender de qué versión tenga cada quien instalada. `/login` y `/register` además lo rechazan con 422 a nivel de schema; `/token` (usado por el botón "Authorize" de Swagger) no pasa por ese schema, así que el guardado en `auth.py` es el que realmente evita el crash ahí.
 
 ### 10.2 Rate limiting en login
 `/login` y `/token` bloquean con **429 Too Many Requests** tras **5 intentos fallidos** en **5 minutos** para el mismo email — incluso si el 6.º intento usa la contraseña correcta. El contador se reinicia tras un login exitoso o al pasar la ventana de 5 minutos.
