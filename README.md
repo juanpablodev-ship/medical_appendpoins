@@ -22,27 +22,105 @@ Sistema backend para coordinar la disponibilidad de profesionales médicos y la 
 ## 1. Requisitos Previos
 
 Necesitas tener instalado en tu computadora:
+- **Python 3.10 o superior**
+- **pip** (gestor de paquetes de Python, viene incluido con Python)
+- **Git** (para clonar el repositorio)
 
-- **Python 3.8 o superior**
-- **pip** (gestor de paquetes de Python, viene con Python)
-- **Homebrew** (solo macOS, para instalar el visor de BD)
+Las instrucciones de instalación difieren entre macOS y Windows — sigue la que corresponda a tu sistema.
 
-Para verificar que tienes Python:
+### 1.1 macOS
+
+**Verificar si ya tienes Python:**
 ```bash
 python3 --version
 ```
+Si aparece `Python 3.10` o superior, ya lo tienes y puedes saltar al siguiente paso. Si no, instálalo con [Homebrew](https://brew.sh):
+```bash
+# Instalar Homebrew (si no lo tienes)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Instalar Python
+brew install python@3.12
+
+# Instalar Git (normalmente ya viene con macOS)
+brew install git
+```
+
+### 1.2 Windows
+
+**Verificar si ya tienes Python:** abre **PowerShell** (búscalo en el menú Inicio) y corre:
+```powershell
+python --version
+```
+Si aparece `Python 3.10` o superior, ya lo tienes. Si da error o una versión vieja:
+
+1. Ve a [python.org/downloads](https://www.python.org/downloads/) y descarga la última versión de Python 3 para Windows.
+2. Ejecuta el instalador. **Muy importante**: en la primera pantalla, marca la casilla **"Add python.exe to PATH"** antes de darle a "Install Now" — si no la marcas, los comandos `python`/`pip` no van a funcionar en la terminal.
+3. Cierra y vuelve a abrir PowerShell, y verifica de nuevo con `python --version`.
+
+**Instalar Git:** descarga el instalador desde [git-scm.com/downloads](https://git-scm.com/downloads) y déjalo con las opciones por defecto. Verifica con:
+```powershell
+git --version
+```
+
+**Habilitar la ejecución de scripts en PowerShell** (necesario más adelante para activar el entorno virtual). Abre PowerShell **como administrador** (clic derecho → "Ejecutar como administrador") y corre una sola vez:
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+Confirma con "S" o "Y" si te lo pregunta. Ya puedes usar una terminal normal para todo lo demás.
 
 ---
 
 ## 2. Instalación
 
-### 2.1 Navegar a la carpeta del proyecto
+### 2.1 Clonar el repositorio
+
+**macOS** (Terminal):
 ```bash
-cd ~/Desktop/medical-appointments
+cd ~/Desktop
+git clone https://github.com/juanpablodev-ship/medical_appendpoins.git medical-appointments
+cd medical-appointments
 ```
 
-### 2.2 Instalar las dependencias
+**Windows** (PowerShell):
+```powershell
+cd ~\Desktop
+git clone https://github.com/juanpablodev-ship/medical_appendpoins.git medical-appointments
+cd medical-appointments
+```
+
+### 2.2 Crear y activar un entorno virtual
+Un entorno virtual mantiene las dependencias de este proyecto separadas del resto de tu sistema. Es opcional pero muy recomendado.
+
+**macOS:**
 ```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+**Windows (PowerShell):**
+```powershell
+python -m venv venv
+venv\Scripts\Activate.ps1
+```
+
+**Windows (cmd.exe, si no usas PowerShell):**
+```cmd
+python -m venv venv
+venv\Scripts\activate.bat
+```
+
+Sabrás que quedó activado porque el prompt de la terminal empieza con `(venv)`. A partir de aquí, **todos los comandos de este README asumen que el entorno virtual está activado** — si cierras la terminal, tienes que volver a activarlo (`source venv/bin/activate` o `venv\Scripts\Activate.ps1`) antes de seguir trabajando.
+
+### 2.3 Instalar las dependencias
+
+**macOS:**
+```bash
+pip3 install -r requirements.txt
+```
+
+**Windows:**
+```powershell
 pip install -r requirements.txt
 ```
 
@@ -58,35 +136,44 @@ Esto instalará automáticamente:
 | `pydantic` | Validación de datos de entrada |
 | `email-validator` | Validación de formato de email |
 | `alembic` | Migraciones de base de datos |
+| `requests` | Usado por `test_all.py` y `security_test.py` (no por la API en sí) |
 
-Si algún paquete falla, instálalo por separado:
+Si algún paquete falla, instálalo por separado (mismo comando en macOS/Windows, cambiando `pip3` por `pip` según corresponda):
 ```bash
-pip install fastapi uvicorn sqlalchemy
-pip install 'python-jose[cryptography]' 'passlib[bcrypt]'
-pip install python-multipart pydantic[email]
+pip install fastapi uvicorn sqlalchemy alembic requests
+pip install "python-jose[cryptography]" "passlib[bcrypt]"
+pip install python-multipart "pydantic[email]"
 ```
+> En Windows, si `passlib[bcrypt]` falla por no encontrar un compilador, instala primero el wheel precompilado: `pip install --only-binary :all: bcrypt`, y luego vuelve a correr `pip install -r requirements.txt`.
 
-### 2.3 (Opcional) Instalar visor de base de datos
+### 2.4 (Opcional) Instalar un visor de base de datos
+Útil para inspeccionar `medical_appointments.db` visualmente en vez de usar la terminal.
+
+**macOS:**
 ```bash
 brew install --cask db-browser-for-sqlite
 ```
+
+**Windows:** descarga el instalador ("DB Browser for SQLite - Windows") desde [sqlitebrowser.org](https://sqlitebrowser.org/dl/) y ejecútalo.
 
 ---
 
 ## 3. Ejecución
 
+Los comandos de esta sección son **iguales en macOS y Windows** salvo que se indique lo contrario (asumiendo que ya activaste el entorno virtual del paso 2.2).
+
 ### 3.1 Crear/actualizar la base de datos con Alembic
-El esquema de la base de datos ya **no** se crea automáticamente al levantar el servidor — lo gestiona Alembic. La primera vez (o después de clonar el repo), corre:
+El esquema de la base de datos ya **no** se crea automáticamente al levantar el servidor — lo gestiona Alembic. La primera vez (o después de clonar el repo, o de traer cambios nuevos), corre:
 ```bash
-cd ~/Desktop/medical-appointments
 alembic upgrade head
 ```
 Esto crea `medical_appointments.db` con las tablas `users`, `doctor_availability` y `appointments` ya actualizadas. Ver la sección [9. Migraciones con Alembic](#9-migraciones-con-alembic) para más detalle.
 
 ### 3.2 Iniciar el servidor
 ```bash
-python3 -m uvicorn main:app --reload --port 8000 --no-proxy-headers
+uvicorn main:app --reload --port 8000 --no-proxy-headers
 ```
+> Si el comando `uvicorn` no se reconoce (típico en Windows si el entorno virtual no quedó activado), usa `python -m uvicorn main:app --reload --port 8000 --no-proxy-headers` (o `python3 -m uvicorn ...` en macOS).
 
 Verás en la terminal:
 ```
@@ -96,13 +183,13 @@ INFO:     Started server process
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 ```
+Deja esta terminal abierta corriendo el servidor, y usa **una segunda terminal** (con el mismo entorno virtual activado) para todo lo demás (correr `test_all.py`, `alembic revision`, `curl`, etc.).
 
 ### 3.3 Abrir Swagger (documentación interactiva)
 Abre tu navegador y ve a:
 ```
 http://localhost:8000/docs
 ```
-
 Ahí puedes probar todos los endpoints directamente desde el navegador.
 
 ### 3.4 Abrir ReDoc (documentación alternativa)
@@ -111,7 +198,17 @@ http://localhost:8000/redoc
 ```
 
 ### 3.5 Detener el servidor
-En la terminal presiona `Ctrl + C`.
+En la terminal donde corre uvicorn, presiona `Ctrl + C`.
+
+### 3.6 Correr los scripts de prueba
+Con el servidor del paso 3.2 corriendo, en la **segunda terminal** (mismo entorno virtual activado):
+```bash
+python3 test_all.py        # macOS: prueba que todo funcione (53+ checks)
+python3 security_test.py   # macOS: pentest, ataca la API a propósito
+
+python test_all.py         # Windows: equivalente
+python security_test.py    # Windows: equivalente
+```
 
 ---
 
@@ -127,6 +224,7 @@ medical-appointments/
 ├── auth.py              # Autenticación JWT y control de roles
 ├── requirements.txt     # Lista de dependencias
 ├── test_all.py          # Script de pruebas end-to-end contra el servidor
+├── security_test.py     # Script de pentest: ataca la API y verifica que cada defensa responda
 ├── alembic.ini          # Configuración de Alembic (migraciones)
 ├── alembic/
 │   ├── env.py           # Conecta Alembic con Base.metadata y DATABASE_URL
@@ -464,6 +562,8 @@ alembic stamp head
 
 ## 10. Seguridad
 
+Todo lo de esta sección está verificado con `security_test.py` (ver más abajo), un script de pentest que ataca la API a propósito y confirma que cada defensa responda como debe.
+
 ### 10.1 Política de contraseñas
 Al registrarse, la contraseña debe tener **mínimo 8 caracteres** y contener **al menos una letra y un número** (máximo 72 caracteres, límite propio de bcrypt).
 
@@ -542,6 +642,20 @@ Un CAPTCHA tradicional no aplica bien a una API JSON pura sin frontend (no hay d
 ### 10.16 Limitaciones conocidas (no corregidas)
 - No es un CAPTCHA real: alguien con acceso a muchos emails desechables (temp-mail) todavía podría verificar cuentas automatizadas una por una — pero ya no puede hacerlo con solo un script contra `/register`, necesita resolver la verificación de cada email.
 - `/logout` y `/logout-all` no muestran al usuario una lista de "sesiones activas" (IP, dispositivo, fecha) para elegir cuál cerrar — solo existe "esta" o "todas".
+
+### 10.17 Script de pentest (`security_test.py`)
+A diferencia de `test_all.py` (que verifica que la API *funcione*), este script la **ataca a propósito** y confirma que cada defensa responda con el código esperado (401/403/422/429) en vez de dejar pasar el ataque — manipulación de JWT, inyección SQL, IDOR, escalación de privilegios, mass assignment, overflow de enteros, exposición de PII, duplicados por mayúsculas, payload gigante, verificación de email, revocación de sesión, fuerza bruta, password spraying con spoofing de `X-Forwarded-For`, y creación masiva de cuentas.
+
+```bash
+uvicorn main:app --reload --no-proxy-headers   # en una terminal
+python3 security_test.py                       # en otra
+```
+
+Requiere correr **sin `SMTP_HOST` configurado** (modo dev), ya que usa `/_dev/verification-token` para verificar cuentas de prueba automáticamente.
+
+> ⚠️ El script agota a propósito los límites de rate limiting por IP (login y registro). Después de correrlo, tu propia IP queda bloqueada para login (~5 min) o registro (~1 hora) en esa base de datos — es el comportamiento esperado, no un bug. Córrelo contra una base de datos de prueba, no la real, y no dos veces seguidas esperando que ambas pasen limpio.
+
+Cada línea marcada con 🚨 en la salida indica un ataque que tuvo más éxito del esperado — es decir, una vulnerabilidad real que hay que investigar.
 
 ---
 
