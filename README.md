@@ -162,23 +162,18 @@ brew install --cask db-browser-for-sqlite
 
 Los comandos de esta sección son **iguales en macOS y Windows** salvo que se indique lo contrario (asumiendo que ya activaste el entorno virtual del paso 2.2).
 
-### 3.1 Crear/actualizar la base de datos con Alembic
-El esquema de la base de datos ya **no** se crea automáticamente al levantar el servidor — lo gestiona Alembic. La primera vez (o después de clonar el repo, o de traer cambios nuevos), corre:
-```bash
-alembic upgrade head
-```
-Esto crea `medical_appointments.db` con las tablas `users`, `doctor_availability` y `appointments` ya actualizadas. Ver la sección [9. Migraciones con Alembic](#9-migraciones-con-alembic) para más detalle.
+### 3.1 Iniciar el servidor
 
-### 3.2 Iniciar el servidor
-
-**Forma recomendada** (igual en macOS y Windows, no requiere acordarse de ningún flag):
+**Forma recomendada** (igual en macOS y Windows, no requiere acordarse de ningún flag ni paso extra):
 ```bash
 python3 run.py   # macOS/Linux
 python run.py     # Windows
 ```
+`run.py` corre `alembic upgrade head` automáticamente antes de levantar uvicorn — no hace falta correrlo aparte, ni siquiera la primera vez. Ver la sección [9. Migraciones con Alembic](#9-migraciones-con-alembic) para más detalle sobre qué hace esa migración.
 
-**Alternativa manual** (equivalente, pero **debes** incluir `--no-proxy-headers` a mano cada vez — si se te olvida, el rate limiting por IP queda evadible con un header `X-Forwarded-For` falso, ver [10.13](#1013-el-servidor-no-confía-en-x-forwarded-for)):
+**Alternativa manual** (si por lo que sea no quieres usar `run.py`): con esta forma **sí** tienes que acordarte de correr la migración tú mismo, y de incluir `--no-proxy-headers` — si olvidas cualquiera de las dos, la API responde con 500 en cualquier endpoint que use la base de datos (falta la migración), o el rate limiting por IP queda evadible con un header `X-Forwarded-For` falso (falta el flag, ver [10.13](#1013-el-servidor-no-confía-en-x-forwarded-for)):
 ```bash
+alembic upgrade head
 uvicorn main:app --reload --port 8000 --no-proxy-headers
 ```
 > Si el comando `uvicorn` no se reconoce (típico en Windows si el entorno virtual no quedó activado), usa `python -m uvicorn main:app --reload --port 8000 --no-proxy-headers` (o `python3 -m uvicorn ...` en macOS).
@@ -193,25 +188,25 @@ INFO:     Application startup complete.
 ```
 Deja esta terminal abierta corriendo el servidor, y usa **una segunda terminal** (con el mismo entorno virtual activado) para todo lo demás (correr `test_all.py`, `alembic revision`, `curl`, etc.).
 
-### 3.3 Abrir Swagger (documentación interactiva)
+### 3.2 Abrir Swagger (documentación interactiva)
 Abre tu navegador y ve a:
 ```
 http://localhost:8000/docs
 ```
 Ahí puedes probar todos los endpoints directamente desde el navegador.
 
-### 3.4 Abrir ReDoc (documentación alternativa)
+### 3.3 Abrir ReDoc (documentación alternativa)
 ```
 http://localhost:8000/redoc
 ```
 
-### 3.5 Detener el servidor
+### 3.4 Detener el servidor
 En la terminal donde corre uvicorn, presiona `Ctrl + C`.
 
-### 3.6 Correr los scripts de prueba
-Con el servidor del paso 3.2 corriendo, en la **segunda terminal** (mismo entorno virtual activado):
+### 3.5 Correr los scripts de prueba
+Con el servidor del paso 3.1 corriendo, en la **segunda terminal** (mismo entorno virtual activado):
 ```bash
-python3 test_all.py        # macOS: prueba que todo funcione (53+ checks)
+python3 test_all.py        # macOS: prueba que todo funcione (70+ checks)
 python3 security_test.py   # macOS: pentest, ataca la API a propósito
 
 python test_all.py         # Windows: equivalente
@@ -625,7 +620,7 @@ Cada token incluye un identificador único (`jti`) y cuándo fue emitido (`iat`)
 ### 10.13 El servidor no confía en `X-Forwarded-For`
 Por defecto, uvicorn confía en el header `X-Forwarded-For` cuando la conexión viene de `127.0.0.1` — sin desactivar esto, cualquiera podía mandar ese header con un valor distinto en cada request y evadir por completo el rate limiting por IP ([10.10](#1010-rate-limiting-también-por-ip-password-spraying) y [10.11](#1011-límite-de-registros-por-ip)), ya que cada request parecía venir de una IP "nueva". `security_test.py` prueba esto exactamente y lo marca como 🚨 si el servidor no está bien configurado.
 
-La primera versión de este fix dependía de que corrieras `uvicorn` con el flag `--no-proxy-headers` **a mano, cada vez** — fácil de olvidar, y de hecho `security_test.py` detectó justo eso en una corrida sin el flag. Por eso ahora existe **`run.py`**: levanta uvicorn con `proxy_headers=False` ya fijado en el código, así no depende de que nadie se acuerde de un flag. **Usa `python run.py` / `python3 run.py` en vez del comando `uvicorn` a secas** (ver [3.2](#32-iniciar-el-servidor)).
+La primera versión de este fix dependía de que corrieras `uvicorn` con el flag `--no-proxy-headers` **a mano, cada vez** — fácil de olvidar, y de hecho `security_test.py` detectó justo eso en una corrida sin el flag. Por eso ahora existe **`run.py`**: levanta uvicorn con `proxy_headers=False` ya fijado en el código, así no depende de que nadie se acuerde de un flag. **Usa `python run.py` / `python3 run.py` en vez del comando `uvicorn` a secas** (ver [3.1](#31-iniciar-el-servidor)).
 
 `main.py` también fija `proxy_headers=False` en su propio bloque `if __name__ == "__main__":`, por si alguna vez lo corres con `python main.py` directamente.
 
@@ -662,8 +657,8 @@ Un CAPTCHA tradicional no aplica bien a una API JSON pura sin frontend (no hay d
 A diferencia de `test_all.py` (que verifica que la API *funcione*), este script la **ataca a propósito** y confirma que cada defensa responda con el código esperado (401/403/422/429) en vez de dejar pasar el ataque — manipulación de JWT, inyección SQL, IDOR, escalación de privilegios, mass assignment, overflow de enteros, exposición de PII, duplicados por mayúsculas, payload gigante, verificación de email, revocación de sesión, fuerza bruta, password spraying con spoofing de `X-Forwarded-For`, y creación masiva de cuentas.
 
 ```bash
-uvicorn main:app --reload --no-proxy-headers   # en una terminal
-python3 security_test.py                       # en otra
+python3 run.py             # en una terminal
+python3 security_test.py   # en otra
 ```
 
 Requiere correr **sin `SMTP_HOST` configurado** (modo dev), ya que usa `/_dev/verification-token` para verificar cuentas de prueba automáticamente.
@@ -671,6 +666,9 @@ Requiere correr **sin `SMTP_HOST` configurado** (modo dev), ya que usa `/_dev/ve
 > ⚠️ El script agota a propósito los límites de rate limiting por IP (login y registro). Después de correrlo, tu propia IP queda bloqueada para login (~5 min) o registro (~1 hora) en esa base de datos — es el comportamiento esperado, no un bug. Córrelo contra una base de datos de prueba, no la real, y no dos veces seguidas esperando que ambas pasen limpio.
 
 Cada línea marcada con 🚨 en la salida indica un ataque que tuvo más éxito del esperado — es decir, una vulnerabilidad real que hay que investigar.
+
+### 10.18 `run.py` corre las migraciones automáticamente
+Desde que se introdujo Alembic, el servidor dejó de crear las tablas solo al arrancar — si alguien levanta el servidor sin haber corrido `alembic upgrade head` antes (por ejemplo, con una base de datos nueva o recién borrada), **todo** endpoint que toque la base de datos responde con **500 Internal Server Error** en vez de un error controlado, porque las tablas simplemente no existen. `run.py` llama a `alembic upgrade head` por su cuenta antes de levantar uvicorn, así que este error deja de ser posible siguiendo el flujo recomendado. `test_all.py` y `security_test.py` además revisan esto al arrancar (`GET /doctors`) y avisan con un mensaje claro en vez de un traceback si detectan una base de datos sin migrar.
 
 ---
 

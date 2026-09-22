@@ -113,8 +113,15 @@ try:
     print(f"✅ Servidor accesible en {BASE}")
 except requests.exceptions.ConnectionError:
     print(f"❌ No se pudo conectar a {BASE}")
-    print("   Levanta el servidor primero con: uvicorn main:app --reload --no-proxy-headers")
+    print("   Levanta el servidor primero con: python3 run.py")
     sys.exit(1)
+
+r_db_check = requests.get(f"{BASE}/doctors")
+if r_db_check.status_code >= 500:
+    print("❌ La base de datos no tiene las tablas creadas (¿corriste 'alembic upgrade head'?)")
+    print(f"   detalle: {r_db_check.text[:200]}")
+    sys.exit(1)
+print("✅ Base de datos con el esquema esperado")
 
 _probe = requests.get(f"{BASE}/_dev/verification-token", params={"email": "x@x.com"})
 # Si la ruta no existe, FastAPI responde {"detail": "Not Found"} (genérico del framework);
