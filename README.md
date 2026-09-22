@@ -131,7 +131,7 @@ Esto instalará automáticamente:
 | `uvicorn` | Servidor HTTP para ejecutar la app |
 | `sqlalchemy` | ORM para conectarse a la base de datos |
 | `python-jose` | Crear y verificar tokens JWT |
-| `passlib` | Hashear contraseñas con bcrypt |
+| `bcrypt` | Hashear contraseñas (se usa directo, sin passlib) |
 | `python-multipart` | Soporte para formularios en FastAPI |
 | `pydantic` | Validación de datos de entrada |
 | `email-validator` | Validación de formato de email |
@@ -140,11 +140,11 @@ Esto instalará automáticamente:
 
 Si algún paquete falla, instálalo por separado (mismo comando en macOS/Windows, cambiando `pip3` por `pip` según corresponda):
 ```bash
-pip install fastapi uvicorn sqlalchemy alembic requests
-pip install "python-jose[cryptography]" "passlib[bcrypt]"
+pip install fastapi uvicorn sqlalchemy alembic requests bcrypt
+pip install "python-jose[cryptography]"
 pip install python-multipart "pydantic[email]"
 ```
-> En Windows, si `passlib[bcrypt]` falla por no encontrar un compilador, instala primero el wheel precompilado: `pip install --only-binary :all: bcrypt`, y luego vuelve a correr `pip install -r requirements.txt`.
+> En Windows, si `bcrypt` falla por no encontrar un compilador, instala primero el wheel precompilado: `pip install --only-binary :all: bcrypt`, y luego vuelve a correr `pip install -r requirements.txt`.
 
 ### 2.4 (Opcional) Instalar un visor de base de datos
 Útil para inspeccionar `medical_appointments.db` visualmente en vez de usar la terminal.
@@ -571,7 +571,9 @@ Todo lo de esta sección está verificado con `security_test.py` (ver más abajo
 ### 10.1 Política de contraseñas
 Al registrarse, la contraseña debe tener **mínimo 8 caracteres** y contener **al menos una letra y un número**. El límite real de bcrypt es **72 bytes**, no 72 caracteres — con tildes, `ñ` o emojis, una contraseña de 72 caracteres puede pesar más de 72 bytes en UTF-8, así que la validación cuenta bytes, no caracteres.
 
-> **Nota de compatibilidad**: según la versión de `bcrypt` instalada (no está fijada en `requirements.txt`), pasarle una contraseña de más de 72 bytes directamente a la librería puede lanzar `ValueError` en vez de simplemente rechazarla — el comportamiento cambió entre versiones y no es igual en todas las máquinas. Por eso `auth.py` valida el largo en bytes **antes** de llamar a bcrypt en `verify_password()`/`hash_password()`, sin depender de qué versión tenga cada quien instalada. `/login` y `/register` además lo rechazan con 422 a nivel de schema; `/token` (usado por el botón "Authorize" de Swagger) no pasa por ese schema, así que el guardado en `auth.py` es el que realmente evita el crash ahí.
+> **Nota de compatibilidad**: pasarle a `bcrypt` una contraseña de más de 72 bytes puede lanzar `ValueError` en vez de simplemente rechazarla. Por eso `auth.py` valida el largo en bytes **antes** de llamar a `bcrypt.hashpw()`/`bcrypt.checkpw()` en `hash_password()`/`verify_password()`. `/login` y `/register` además lo rechazan con 422 a nivel de schema; `/token` (usado por el botón "Authorize" de Swagger) no pasa por ese schema, así que el guardado en `auth.py` es el que realmente evita el crash ahí.
+>
+> El proyecto usa la librería `bcrypt` **directamente**, no a través de `passlib` — `passlib` no se actualiza desde 2020 y su código de autodiagnóstico interno (`detect_wrap_bug`) es incompatible con versiones recientes de `bcrypt` (4.x/5.x), lo que puede hacer que el servidor **no arranque en absoluto** con un `ValueError` al importar `auth.py`, sin que tenga nada que ver con ninguna contraseña real. Si ves ese error específico, significa que tu entorno todavía tiene una versión vieja del código — haz `git pull` y reinstala dependencias.
 
 ### 10.2 Rate limiting en login
 `/login` y `/token` bloquean con **429 Too Many Requests** tras **5 intentos fallidos** en **5 minutos** para el mismo email — incluso si el 6.º intento usa la contraseña correcta. El contador se reinicia tras un login exitoso o al pasar la ventana de 5 minutos.

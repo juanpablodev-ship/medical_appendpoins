@@ -1,10 +1,10 @@
 import os
 import secrets
 import smtplib
+import bcrypt
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -33,12 +33,7 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
 SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER or "no-reply@medical-appointments.local")
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8000")
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-# Hash "señuelo" usado cuando el email no existe, para que el tiempo de
-# respuesta de un login fallido no delate si el email está registrado.
-_DUMMY_HASH = pwd_context.hash("dummy-password-para-tiempo-constante")
 
 LOGIN_ATTEMPTS_LIMIT = 5              # intentos fallidos por email
 LOGIN_ATTEMPTS_WINDOW_SECONDS = 300
@@ -86,19 +81,26 @@ def check_register_rate_limit(db: Session, client_ip: str):
     _record_attempt(db, "register_ip", client_ip)
 
 
-def verify_password(plain_password, hashed_password):
-    # bcrypt no soporta contraseñas de más de 72 bytes. Según la versión
-    # instalada, algunas implementaciones truncan en silencio y otras lanzan
-    # ValueError — no hay que depender de cuál hace cada máquina.
-    if len(plain_password.encode("utf-8")) > 72:
-        return False
-    return pwd_context.verify(plain_password, hashed_password)
-
-
-def hash_password(password):
+def hash_password(password: str) -> str:
     if len(password.encode("utf-8")) > 72:
         raise ValueError("La contraseña no puede superar 72 bytes")
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    # bcrypt no soporta contraseñas de más de 72 bytes; lo rechazamos antes
+    # de llegar a la librería en vez de confiar en cómo la maneje cada versión.
+    if len(plain_password.encode("utf-8")) > 72:
+        return False
+    try:
+        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+    except ValueError:
+        return False
+
+
+# Hash "señuelo" usado cuando el email no existe, para que el tiempo de
+# respuesta de un login fallido no delate si el email está registrado.
+_DUMMY_HASH = hash_password("dummy-password-para-tiempo-constante")
 
 
 def create_access_token(data: dict):
